@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { load, type CheerioAPI } from "cheerio";
+import { load, type CheerioAPI, type Cheerio } from "cheerio";
+import type { AnyNode } from "domhandler";
 import sanitizeHtml from "sanitize-html";
 
 export const runtime = "nodejs";
@@ -36,10 +37,10 @@ function normalizeHeader(text: string): string {
 
 function findColumnIndexes(
   $: CheerioAPI,
-  table: any
+  $table: Cheerio<AnyNode>
 ): { id: number; name: number; unlock: number } | null {
   const headers: string[] = [];
-  $(table)
+  $table
     .find("tr")
     .first()
     .find("th, td")
@@ -122,7 +123,8 @@ function pickLatestVersionSnippet(html: string): string {
     /(except in|except for|before|prior to|no longer|removed in)/i.test(t);
 
   const matchRepentance = (t: string) => /\brepentance\+?\b/i.test(t);
-  const matchABPlus = (t: string) => /\bafterbirth\s*\+|\bafterbirth\+\b/i.test(t);
+  const matchABPlus = (t: string) =>
+    /\bafterbirth\s*\+|\bafterbirth\+\b/i.test(t);
   const matchAB = (t: string) => /\bafterbirth\b/i.test(t);
 
   // 1) Latest Repentance line that isn't an exclusion
@@ -134,7 +136,9 @@ function pickLatestVersionSnippet(html: string): string {
   }
 
   // 2) Any Repentance line (take the last)
-  const repAny = parts.map((p, i) => ({ ...p, i })).filter((p) => matchRepentance(p.text));
+  const repAny = parts
+    .map((p, i) => ({ ...p, i }))
+    .filter((p) => matchRepentance(p.text));
   if (repAny.length > 0) {
     return repAny[repAny.length - 1].html;
   }
@@ -214,12 +218,15 @@ export async function GET() {
       );
     }
 
-    const data = (await res.json()) as any;
+    // Narrow the JSON shape from wiki.gg parse API
+    type ParseResponse = {
+      parse?: { text?: { "*": string } | string };
+    };
+    const data: ParseResponse = await res.json();
     const html: string =
-      data?.parse?.text?.["*"] ??
-      data?.parse?.text ??
-      data?.parse?.["*"] ??
-      "";
+      (typeof data?.parse?.text === "string"
+        ? data.parse.text
+        : data?.parse?.text?.["*"]) ?? "";
 
     if (!html) {
       return NextResponse.json(
@@ -231,11 +238,12 @@ export async function GET() {
     const $ = load(html);
     const achievementsMap = new Map<number, Achievement>();
 
-    $("table").each((_, table) => {
-      const idx = findColumnIndexes($, table);
+    $("table").each((_, el) => {
+      const $table = $(el);
+      const idx = findColumnIndexes($, $table);
       if (!idx) return;
 
-      $(table)
+      $table
         .find("tr")
         .each((rowIdx, tr) => {
           if (rowIdx === 0) return; // header
@@ -251,6 +259,7 @@ export async function GET() {
           const name = nameCell.text().trim();
           if (!name) return;
 
+          // Capture achievement wiki link if present
           const rawHref = nameCell.find("a").first().attr("href") || "";
           const url = rawHref ? toAbsoluteHref(rawHref) : undefined;
 
@@ -283,6 +292,7 @@ export async function GET() {
       (a, b) => a.id - b.id
     );
 
+    // Sanity check
     if (achievements.length < 500) {
       return NextResponse.json(
         {
@@ -307,10 +317,13 @@ export async function GET() {
       "s-maxage=86400, stale-while-revalidate=43200"
     );
     return response;
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: err?.message ?? "Unknown error" },
-      { status: 500 }
-    );
+  } catch (err) {
+    const message =
+      err instanceof Error
+        ? err.message
+        : typeof err === "string"
+        ? err
+        : "Unknown error";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

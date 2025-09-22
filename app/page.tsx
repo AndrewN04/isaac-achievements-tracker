@@ -81,9 +81,15 @@ export default function Page(): JSX.Element {
           setAchievements(data.achievements);
           setError(null);
         }
-      } catch (err: any) {
+      } catch (err) {
         if (!cancelled) {
-          setError(err?.message || "Failed to load achievements.");
+          const message =
+            err instanceof Error
+              ? err.message
+              : typeof err === "string"
+              ? err
+              : "Failed to load achievements.";
+          setError(message);
         }
       } finally {
         if (!cancelled) setLoading(false);
