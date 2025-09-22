@@ -1,6 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  startTransition,
+  useDeferredValue
+} from "react";
+import { flushSync } from "react-dom";
 import Controls from "@/components/Controls";
 import AchievementsTable from "@/components/AchievementsTable";
 import type { JSX } from "react";
@@ -30,14 +39,15 @@ export default function Page(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
 
   const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
   const [statusFilter, setStatusFilter] =
     useState<StatusFilter>("all");
   const [idSort, setIdSort] = useState<SortMode>("initial");
 
-  // completed map: only true entries are kept for tidiness
-  const [completed, setCompleted] = useState<
-    Record<number, boolean>
-  >({});
+  const [showSticky, setShowSticky] = useState(false);
+  const stickyInputRef = useRef<HTMLInputElement>(null);
+
+  const [completed, setCompleted] = useState<Record<number, boolean>>({});
 
   // Load completion state from localStorage
   useEffect(() => {
@@ -100,6 +110,14 @@ export default function Page(): JSX.Element {
     };
   }, []);
 
+  // Sticky search bar visibility
+  useEffect(() => {
+    const onScroll = () => setShowSticky(window.scrollY > 280);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
   // Derived counts
   const totalCount = achievements.length;
   const completedCount = useMemo(
@@ -111,24 +129,21 @@ export default function Page(): JSX.Element {
     [achievements, completed]
   );
 
-  // Prepare list with original order index and apply search/filter/sort
+  // Filtering + sorting
   const filtered = useMemo(() => {
     const withOrder = achievements.map((a, i) => ({
       ...a,
       __order: i
     }));
 
-    const q = search.trim().toLowerCase();
+    const q = deferredSearch.trim().toLowerCase();
     const isDigitsOnly = /^\d+$/.test(q);
 
     let list = withOrder;
     if (q) {
       list = list.filter((a) => {
         const nameMatch = a.name.toLowerCase().includes(q);
-        // For ID search, match only as a prefix (left-most digits)
-        const idMatch = isDigitsOnly
-          ? a.id.toString().startsWith(q)
-          : false;
+        const idMatch = isDigitsOnly ? a.id.toString().startsWith(q) : false;
         return nameMatch || idMatch;
       });
     }
@@ -140,16 +155,12 @@ export default function Page(): JSX.Element {
     }
 
     const sorted = list.slice();
-    if (idSort === "asc") {
-      sorted.sort((a, b) => a.id - b.id);
-    } else if (idSort === "desc") {
-      sorted.sort((a, b) => b.id - a.id);
-    } else {
-      sorted.sort((a, b) => a.__order - b.__order);
-    }
+    if (idSort === "asc") sorted.sort((a, b) => a.id - b.id);
+    else if (idSort === "desc") sorted.sort((a, b) => b.id - a.id);
+    else sorted.sort((a, b) => a.__order - b.__order);
 
     return sorted as Achievement[];
-  }, [achievements, completed, search, statusFilter, idSort]);
+  }, [achievements, completed, deferredSearch, statusFilter, idSort]);
 
   const toggleIdSort = () => {
     setIdSort((prev) =>
@@ -157,15 +168,12 @@ export default function Page(): JSX.Element {
     );
   };
 
-  // Stable, minimal handler to avoid any checkbox lag
+  // Toggle checkbox with minimal re-render impact (row memoized in table)
   const toggleCompleted = useCallback((id: number) => {
     setCompleted((prev) => {
       const next = { ...prev };
-      if (next[id]) {
-        delete next[id];
-      } else {
-        next[id] = true;
-      }
+      if (next[id]) delete next[id];
+      else next[id] = true;
       return next;
     });
   }, []);
@@ -174,11 +182,8 @@ export default function Page(): JSX.Element {
     setCompleted((prev) => {
       const next = { ...prev };
       for (const a of filtered) {
-        if (value) {
-          next[a.id] = true;
-        } else {
-          delete next[a.id];
-        }
+        if (value) next[a.id] = true;
+        else delete next[a.id];
       }
       return next;
     });
@@ -199,63 +204,106 @@ export default function Page(): JSX.Element {
     }
   };
 
+  // Instant clear for search (no lag)
+  const clearSearchImmediate = () => {
+    flushSync(() => setSearch(""));
+  };
+
   return (
-    <main className="mx-auto max-w-[1200px] px-4 py-8">
-      <header className="mb-6">
-        <h1 className="text-2xl md:text-3xl font-semibold">
-          Isaac Achievements Tracker
-        </h1>
-        <p className="text-muted mt-2">
-          A fast, offline-friendly checklist for The Binding of Isaac
-          achievements. Data is loaded from the official wiki and your
-          progress is saved locally in your browser.
-        </p>
-      </header>
-
-      <section className="mb-4">
-        <Controls
-          search={search}
-          onSearchChange={setSearch}
-          statusFilter={statusFilter}
-          onStatusChange={setStatusFilter}
-          onMarkFiltered={markFiltered}
-          onClearAll={clearAll}
-          counts={{
-            completed: completedCount,
-            total: totalCount,
-            visible: filtered.length
-          }}
-        />
-      </section>
-
-      <section className="card">
-        {loading ? (
-          <div className="p-6 text-muted">Loading achievements…</div>
-        ) : error ? (
-          <div className="p-6 text-red-300">
-            {error}
-            <div className="text-muted mt-2 text-sm">
-              Try reloading the page. If the issue persists, the wiki
-              layout may have changed.
+    <>
+      {/* Floating compact search bar */}
+      {showSticky && (
+        <div className="fixed top-3 left-0 right-0 z-50 pointer-events-none">
+          <div className="mx-auto max-w-[1200px] px-4">
+            <div className="pointer-events-auto rounded-full border border-border bg-card shadow-card px-3 py-2">
+              <div className="relative">
+                <input
+                  ref={stickyInputRef}
+                  value={search}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "") clearSearchImmediate();
+                    else startTransition(() => setSearch(v));
+                  }}
+                  className="w-full bg-transparent outline-none text-sm"
+                  placeholder="Search by name or ID..."
+                  aria-label="Quick search achievements"
+                />
+                {search && (
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={clearSearchImmediate}
+                    aria-label="Clear search"
+                    className="absolute right-1 top-1/2 -translate-y-1/2 -mt-[2px] inline-flex h-6 w-6 items-center justify-center rounded-md leading-none text-muted hover:text-text bg-transparent hover:bg-transparent active:bg-transparent focus:outline-none focus:ring-0 select-none"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
             </div>
           </div>
-        ) : (
-          <div role="region" aria-label="Achievements table" className="p-2">
-            <AchievementsTable
-              achievements={filtered}
-              completed={completed}
-              onToggle={toggleCompleted}
-              sortMode={idSort}
-              onToggleIdSort={toggleIdSort}
-            />
-          </div>
-        )}
-      </section>
+        </div>
+      )}
 
-      <footer className="mt-8 text-center text-xs text-muted">
-        Completed {completedCount} of {totalCount}. Currently showing{" "}
-        {filtered.length} result{filtered.length === 1 ? "" : "s"}.
-      </footer>
-    </main>
+      <main className="mx-auto max-w-[1200px] px-4 py-8">
+        <header className="mb-6">
+          <h1 className="text-2xl md:text-3xl font-semibold">
+            Isaac Achievements Tracker
+          </h1>
+          <p className="text-muted mt-2">
+            A fast, offline-friendly checklist for The Binding of Isaac
+            achievements. Data is loaded from the official wiki and your
+            progress is saved locally in your browser.
+          </p>
+        </header>
+
+        <section className="mb-4">
+          <Controls
+            search={search}
+            onSearchChange={(v) => startTransition(() => setSearch(v))}
+            onClearSearch={clearSearchImmediate}
+            statusFilter={statusFilter}
+            onStatusChange={setStatusFilter}
+            onMarkFiltered={markFiltered}
+            onClearAll={clearAll}
+            counts={{
+              completed: completedCount,
+              total: totalCount,
+              visible: filtered.length
+            }}
+          />
+        </section>
+
+        <section className="card">
+          {loading ? (
+            <div className="p-6 text-muted">Loading achievements…</div>
+          ) : error ? (
+            <div className="p-6 text-red-300">
+              {error}
+              <div className="text-muted mt-2 text-sm">
+                Try reloading the page. If the issue persists, the wiki
+                layout may have changed.
+              </div>
+            </div>
+          ) : (
+            <div role="region" aria-label="Achievements table" className="p-2">
+              <AchievementsTable
+                achievements={filtered}
+                completed={completed}
+                onToggle={toggleCompleted}
+                sortMode={idSort}
+                onToggleIdSort={toggleIdSort}
+              />
+            </div>
+          )}
+        </section>
+
+        <footer className="mt-8 text-center text-xs text-muted">
+          Completed {completedCount} of {totalCount}. Currently showing{" "}
+          {filtered.length} result{filtered.length === 1 ? "" : "s"}.
+        </footer>
+      </main>
+    </>
   );
 }

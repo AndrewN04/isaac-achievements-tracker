@@ -27,12 +27,16 @@ export default function AchievementsTable(props: {
   const sortIcon =
     props.sortMode === "asc" ? "↑" : props.sortMode === "desc" ? "↓" : "↕";
 
+  const WIKI_BASE = "https://bindingofisaacrebirth.wiki.gg/wiki/";
+  const fallbackHref = (name: string) =>
+    WIKI_BASE + encodeURIComponent(name.replace(/\s+/g, "_"));
+
   return (
     <div className="overflow-x-auto rounded-xl">
       <table className="table">
         <thead>
           <tr>
-            <th className="th w-[120px]">Completed?</th>
+            <th className="th w-[100px]">Completed?</th>
             <th className="th">Achievement</th>
             <th
               className="th w-[100px]"
@@ -56,7 +60,7 @@ export default function AchievementsTable(props: {
               key={a.id}
               id={a.id}
               name={a.name}
-              url={a.url}
+              url={a.url || fallbackHref(a.name)}
               unlockHtml={a.unlockHtml}
               checked={!!props.completed[a.id]}
               onToggle={props.onToggle}
@@ -77,17 +81,12 @@ export default function AchievementsTable(props: {
 const AchievementRow = memo(function Row(props: {
   id: number;
   name: string;
-  url?: string;
+  url: string;
   unlockHtml: string;
   checked: boolean;
   onToggle: (id: number) => void;
   zebra: "even" | "odd";
 }) {
-  const WIKI_BASE = "https://bindingofisaacrebirth.wiki.gg/wiki/";
-  const href = props.url
-    ? props.url
-    : WIKI_BASE + encodeURIComponent(props.name.replace(/\s+/g, "_"));
-
   return (
     <tr
       className={
@@ -104,10 +103,11 @@ const AchievementRow = memo(function Row(props: {
           aria-label={`Toggle completion for ${props.name} (ID ${props.id})`}
         />
       </td>
+
       <td className="td">
         <div className="font-medium">
           <a
-            href={href}
+            href={props.url}
             target="_blank"
             rel="noopener noreferrer"
             className="hover:underline"
@@ -116,9 +116,11 @@ const AchievementRow = memo(function Row(props: {
           </a>
         </div>
       </td>
+
       <td className="td">
         <span className="text-muted">{props.id}</span>
       </td>
+
       <td className="td">
         <div
           className="unlock"
@@ -128,7 +130,6 @@ const AchievementRow = memo(function Row(props: {
     </tr>
   );
 },
-// Only re-render the row when its own props change (not the whole table)
 (prev, next) =>
   prev.checked === next.checked &&
   prev.name === next.name &&

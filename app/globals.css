@@ -94,7 +94,12 @@ a:hover {
     focus:ring-2 focus:ring-primary/50 focus:outline-none;
 }
 
-/* Link styles inside sanitized HTML cells */
+/* Unlock cell enhancements */
 .unlock a {
   @apply text-primary underline hover:no-underline;
+}
+.unlock img {
+  /* Keep wiki icons inline and well-aligned with text */
+  display: inline;
+  vertical-align: text-bottom;
 }

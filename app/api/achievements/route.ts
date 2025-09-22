@@ -10,6 +10,7 @@ type Achievement = {
   name: string;
   unlockHtml: string;
   url?: string;
+  imageUrl?: string;
 };
 
 const WIKI_BASE = "https://bindingofisaacrebirth.wiki.gg";
@@ -27,6 +28,14 @@ function toAbsoluteHref(href: string): string {
   return `${WIKI_BASE}/${h.replace(/^\/+/, "")}`;
 }
 
+function toAbsoluteSrc(src: string): string {
+  const s = (src || "").trim();
+  if (!s) return s;
+  if (s.startsWith("/")) return `${WIKI_BASE}${s}`;
+  if (/^(https?:)/i.test(s)) return s;
+  return `${WIKI_BASE}/${s.replace(/^\/+/, "")}`;
+}
+
 function normalizeHeader(text: string): string {
   return text
     .toLowerCase()
@@ -38,7 +47,7 @@ function normalizeHeader(text: string): string {
 function findColumnIndexes(
   $: CheerioAPI,
   $table: Cheerio<AnyNode>
-): { id: number; name: number; unlock: number } | null {
+): { id: number; name: number; unlock: number; image?: number } | null {
   const headers: string[] = [];
   $table
     .find("tr")
@@ -51,6 +60,7 @@ function findColumnIndexes(
   let idIdx = -1;
   let nameIdx = -1;
   let unlockIdx = -1;
+  let imageIdx: number | undefined;
 
   headers.forEach((h, idx) => {
     if (
@@ -78,96 +88,31 @@ function findColumnIndexes(
     ) {
       unlockIdx = idx;
     }
+    if (
+      imageIdx === undefined &&
+      (h.includes("image") || h.includes("icon") || h.includes("sprite"))
+    ) {
+      imageIdx = idx;
+    }
   });
 
   if (idIdx === -1 || nameIdx === -1 || unlockIdx === -1) return null;
-  return { id: idIdx, name: nameIdx, unlock: unlockIdx };
-}
-
-/**
- * Choose the "latest" variant line from an unlock cell.
- * Heuristics:
- * - Prefer lines mentioning Repentance/Repentance+ and NOT prefixed with
- *   "except in"/"before"/"prior to".
- * - Otherwise prefer Afterbirth+ then Afterbirth.
- * - Fallback to the last line (the wiki usually lists latest last).
- */
-function pickLatestVersionSnippet(html: string): string {
-  if (!html) return html;
-
-  const wrap = load(`<div>${html}</div>`);
-  const parts: { html: string; text: string }[] = [];
-
-  // Prefer list items if present
-  const lis = wrap("li");
-  if (lis.length > 0) {
-    lis.each((_, el) => {
-      const $el = wrap(el);
-      parts.push({ html: $el.html() || "", text: $el.text() });
-    });
-  } else {
-    // Split by <br>
-    const rawParts = html
-      .split(/<br\s*\/?>/gi)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    for (const p of rawParts) {
-      const t = load(p).text();
-      parts.push({ html: p, text: t });
-    }
-  }
-
-  if (parts.length === 0) return html;
-
-  const isExclusion = (t: string) =>
-    /(except in|except for|before|prior to|no longer|removed in)/i.test(t);
-
-  const matchRepentance = (t: string) => /\brepentance\+?\b/i.test(t);
-  const matchABPlus = (t: string) =>
-    /\bafterbirth\s*\+|\bafterbirth\+\b/i.test(t);
-  const matchAB = (t: string) => /\bafterbirth\b/i.test(t);
-
-  // 1) Latest Repentance line that isn't an exclusion
-  const repCandidates = parts
-    .map((p, i) => ({ ...p, i }))
-    .filter((p) => matchRepentance(p.text) && !isExclusion(p.text));
-  if (repCandidates.length > 0) {
-    return repCandidates[repCandidates.length - 1].html;
-  }
-
-  // 2) Any Repentance line (take the last)
-  const repAny = parts
-    .map((p, i) => ({ ...p, i }))
-    .filter((p) => matchRepentance(p.text));
-  if (repAny.length > 0) {
-    return repAny[repAny.length - 1].html;
-  }
-
-  // 3) Afterbirth+ (last)
-  const abp = parts.map((p, i) => ({ ...p, i })).filter((p) => matchABPlus(p.text));
-  if (abp.length > 0) {
-    return abp[abp.length - 1].html;
-  }
-
-  // 4) Afterbirth (last)
-  const ab = parts.map((p, i) => ({ ...p, i })).filter((p) => matchAB(p.text));
-  if (ab.length > 0) {
-    return ab[ab.length - 1].html;
-  }
-
-  // 5) Fallback to last line
-  return parts[parts.length - 1].html;
+  return { id: idIdx, name: nameIdx, unlock: unlockIdx, image: imageIdx };
 }
 
 function sanitizeUnlockHtml(html: string): string {
   return sanitizeHtml(html, {
     allowedTags: [
       "a",
+      "img",
       "b",
       "strong",
       "i",
       "em",
       "span",
+      "small",
+      "sup",
+      "sub",
       "ul",
       "ol",
       "li",
@@ -176,10 +121,15 @@ function sanitizeUnlockHtml(html: string): string {
     ],
     allowedAttributes: {
       a: ["href", "target", "rel", "title"],
-      span: ["class"]
+      img: ["src", "alt", "title", "width", "height", "loading", "decoding"],
+      span: ["class"],
+      sup: ["class"],
+      sub: ["class"],
+      small: ["class"]
     },
     allowedSchemesByTag: {
-      a: ["http", "https", "mailto"]
+      a: ["http", "https", "mailto"],
+      img: ["http", "https"]
     },
     transformTags: {
       a: (_tagName, attribs): sanitizeHtml.Tag => {
@@ -189,12 +139,20 @@ function sanitizeUnlockHtml(html: string): string {
           target: "_blank",
           rel: "noopener noreferrer"
         };
-        if (href) {
-          newAttribs.href = href;
-        } else {
-          delete (newAttribs as Record<string, string>).href;
-        }
+        if (href) newAttribs.href = href;
+        else delete (newAttribs as Record<string, string>).href;
         return { tagName: "a", attribs: newAttribs };
+      },
+      img: (_tagName, attribs): sanitizeHtml.Tag => {
+        const src = attribs.src ? toAbsoluteSrc(attribs.src) : "";
+        const newAttribs: sanitizeHtml.Attributes = {
+          ...attribs,
+          loading: "lazy",
+          decoding: "async"
+        };
+        if (src) newAttribs.src = src;
+        else delete (newAttribs as Record<string, string>).src;
+        return { tagName: "img", attribs: newAttribs };
       }
     }
   });
@@ -218,7 +176,6 @@ export async function GET() {
       );
     }
 
-    // Narrow the JSON shape from wiki.gg parse API
     type ParseResponse = {
       parse?: { text?: { "*": string } | string };
     };
@@ -263,15 +220,29 @@ export async function GET() {
           const rawHref = nameCell.find("a").first().attr("href") || "";
           const url = rawHref ? toAbsoluteHref(rawHref) : undefined;
 
+          // Attempt to capture the image/icon
+          let imageUrl: string | undefined;
+          if (idx.image !== undefined) {
+            const src =
+              cells.eq(idx.image).find("img").first().attr("src") || "";
+            if (src) imageUrl = toAbsoluteSrc(src);
+          }
+          if (!imageUrl) {
+            const fallbackSrc = nameCell.find("img").first().attr("src") || "";
+            if (fallbackSrc) imageUrl = toAbsoluteSrc(fallbackSrc);
+          }
+          if (!imageUrl && cells.length > 0) {
+            const altSrc = cells.eq(0).find("img").first().attr("src") || "";
+            if (altSrc) imageUrl = toAbsoluteSrc(altSrc);
+          }
+
+          // Keep the full unlock HTML (all versions/lines)
           let unlockHtmlRaw = cells.eq(idx.unlock).html() ?? "";
           if (!unlockHtmlRaw)
             unlockHtmlRaw = cells.eq(idx.unlock).text().trim();
 
-          // Keep only the "latest" variant based on version wording
-          const latestVariantRaw = pickLatestVersionSnippet(unlockHtmlRaw);
-
-          // Normalize links then sanitize the chosen variant
-          const frag = load(latestVariantRaw);
+          // Normalize links and image sources, then sanitize
+          const frag = load(unlockHtmlRaw);
           frag("a").each((__, a) => {
             const $a = frag(a);
             const href = $a.attr("href") || "";
@@ -279,11 +250,24 @@ export async function GET() {
             $a.attr("target", "_blank");
             $a.attr("rel", "noopener noreferrer");
           });
+          frag("img").each((__, img) => {
+            const $img = frag(img);
+            const src = $img.attr("src") || "";
+            $img.attr("src", toAbsoluteSrc(src));
+            $img.attr("loading", "lazy");
+            $img.attr("decoding", "async");
+          });
           const transformed = frag.root().html() || "";
           const unlockHtml = sanitizeUnlockHtml(transformed);
 
           if (!achievementsMap.has(id)) {
-            achievementsMap.set(id, { id, name, unlockHtml, url });
+            achievementsMap.set(id, {
+              id,
+              name,
+              unlockHtml,
+              url,
+              imageUrl
+            });
           }
         });
     });
@@ -292,7 +276,6 @@ export async function GET() {
       (a, b) => a.id - b.id
     );
 
-    // Sanity check
     if (achievements.length < 500) {
       return NextResponse.json(
         {
