@@ -1,103 +1,255 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Controls from "@/components/Controls";
+import AchievementsTable from "@/components/AchievementsTable";
+import type { JSX } from "react";
+
+type Achievement = {
+  id: number;
+  name: string;
+  unlockHtml: string;
+  url?: string;
+};
+
+type ApiResponse = {
+  achievements: Achievement[];
+  count: number;
+  source: string;
+  lastFetched: string;
+};
+
+type StatusFilter = "all" | "completed" | "uncompleted";
+type SortMode = "initial" | "asc" | "desc";
+
+const STORAGE_KEY = "isaac_achievements_completed_v1";
+
+export default function Page(): JSX.Element {
+  const [achievements, setAchievements] = useState<Achievement[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] =
+    useState<StatusFilter>("all");
+  const [idSort, setIdSort] = useState<SortMode>("initial");
+
+  // completed map: only true entries are kept for tidiness
+  const [completed, setCompleted] = useState<
+    Record<number, boolean>
+  >({});
+
+  // Load completion state from localStorage
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<number, boolean>;
+        setCompleted(parsed || {});
+      }
+    } catch {
+      // ignore parse errors
+    }
+  }, []);
+
+  // Persist completion state
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(completed));
+    } catch {
+      // ignore quota errors
+    }
+  }, [completed]);
+
+  // Fetch achievements from API
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        setLoading(true);
+        const res = await fetch("/api/achievements", {
+          headers: { Accept: "application/json" }
+        });
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error(
+            `Failed to load achievements (${res.status}): ${txt}`
+          );
+        }
+        const data = (await res.json()) as ApiResponse;
+        if (!cancelled) {
+          setAchievements(data.achievements);
+          setError(null);
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          setError(err?.message || "Failed to load achievements.");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Derived counts
+  const totalCount = achievements.length;
+  const completedCount = useMemo(
+    () =>
+      achievements.reduce(
+        (acc, a) => acc + (completed[a.id] ? 1 : 0),
+        0
+      ),
+    [achievements, completed]
+  );
+
+  // Prepare list with original order index and apply search/filter/sort
+  const filtered = useMemo(() => {
+    const withOrder = achievements.map((a, i) => ({
+      ...a,
+      __order: i
+    }));
+
+    const q = search.trim().toLowerCase();
+    const isDigitsOnly = /^\d+$/.test(q);
+
+    let list = withOrder;
+    if (q) {
+      list = list.filter((a) => {
+        const nameMatch = a.name.toLowerCase().includes(q);
+        // For ID search, match only as a prefix (left-most digits)
+        const idMatch = isDigitsOnly
+          ? a.id.toString().startsWith(q)
+          : false;
+        return nameMatch || idMatch;
+      });
+    }
+
+    if (statusFilter === "completed") {
+      list = list.filter((a) => !!completed[a.id]);
+    } else if (statusFilter === "uncompleted") {
+      list = list.filter((a) => !completed[a.id]);
+    }
+
+    const sorted = list.slice();
+    if (idSort === "asc") {
+      sorted.sort((a, b) => a.id - b.id);
+    } else if (idSort === "desc") {
+      sorted.sort((a, b) => b.id - a.id);
+    } else {
+      sorted.sort((a, b) => a.__order - b.__order);
+    }
+
+    return sorted as Achievement[];
+  }, [achievements, completed, search, statusFilter, idSort]);
+
+  const toggleIdSort = () => {
+    setIdSort((prev) =>
+      prev === "initial" ? "asc" : prev === "asc" ? "desc" : "initial"
+    );
+  };
+
+  // Stable, minimal handler to avoid any checkbox lag
+  const toggleCompleted = useCallback((id: number) => {
+    setCompleted((prev) => {
+      const next = { ...prev };
+      if (next[id]) {
+        delete next[id];
+      } else {
+        next[id] = true;
+      }
+      return next;
+    });
+  }, []);
+
+  const markFiltered = (value: boolean) => {
+    setCompleted((prev) => {
+      const next = { ...prev };
+      for (const a of filtered) {
+        if (value) {
+          next[a.id] = true;
+        } else {
+          delete next[a.id];
+        }
+      }
+      return next;
+    });
+  };
+
+  const clearAll = () => {
+    if (
+      window.confirm(
+        "Clear all completion data from this browser? This cannot be undone."
+      )
+    ) {
+      setCompleted({});
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch {
+        // ignore
+      }
+    }
+  };
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <main className="mx-auto max-w-[1200px] px-4 py-8">
+      <header className="mb-6">
+        <h1 className="text-2xl md:text-3xl font-semibold">
+          Isaac Achievements Tracker
+        </h1>
+        <p className="text-muted mt-2">
+          A fast, offline-friendly checklist for The Binding of Isaac
+          achievements. Data is loaded from the official wiki and your
+          progress is saved locally in your browser.
+        </p>
+      </header>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
+      <section className="mb-4">
+        <Controls
+          search={search}
+          onSearchChange={setSearch}
+          statusFilter={statusFilter}
+          onStatusChange={setStatusFilter}
+          onMarkFiltered={markFiltered}
+          onClearAll={clearAll}
+          counts={{
+            completed: completedCount,
+            total: totalCount,
+            visible: filtered.length
+          }}
+        />
+      </section>
+
+      <section className="card">
+        {loading ? (
+          <div className="p-6 text-muted">Loading achievements…</div>
+        ) : error ? (
+          <div className="p-6 text-red-300">
+            {error}
+            <div className="text-muted mt-2 text-sm">
+              Try reloading the page. If the issue persists, the wiki
+              layout may have changed.
+            </div>
+          </div>
+        ) : (
+          <div role="region" aria-label="Achievements table" className="p-2">
+            <AchievementsTable
+              achievements={filtered}
+              completed={completed}
+              onToggle={toggleCompleted}
+              sortMode={idSort}
+              onToggleIdSort={toggleIdSort}
             />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
+          </div>
+        )}
+      </section>
+
+      <footer className="mt-8 text-center text-xs text-muted">
+        Completed {completedCount} of {totalCount}. Currently showing{" "}
+        {filtered.length} result{filtered.length === 1 ? "" : "s"}.
       </footer>
-    </div>
+    </main>
   );
 }
